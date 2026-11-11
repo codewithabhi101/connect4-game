@@ -1,205 +1,451 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Zip Puzzle</title>
 <style>
-  body { font-family: sans-serif; max-width: 420px; margin: 20px auto; padding: 0 12px; }
-  #top { display: flex; justify-content: space-between; margin-bottom: 8px; }
-  #box { position: relative; width: 100%; aspect-ratio: 1; touch-action: none;
-         user-select: none; background: #fff; border: 1px solid #ddd; border-radius: 12px; overflow: hidden; }
+  * { box-sizing: border-box; }
+
+  body {
+    font-family: Arial, Helvetica, sans-serif;
+    background: #fff;
+    color: #111;
+    max-width: 420px;
+    margin: 0 auto;
+    padding: 20px 14px 40px;
+  }
+
+  h1 { font-size: 26px; margin: 0 0 4px; }
+  .rules { color: #555; font-size: 14px; margin: 0 0 16px; line-height: 1.4; }
+
+  .row { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
+
+  input {
+    flex: 1;
+    padding: 10px 12px;
+    font-size: 15px;
+    border: 2px solid #111;
+    border-radius: 8px;
+    background: #fff;
+    color: #111;
+  }
+  input:focus { outline: none; box-shadow: 0 0 0 3px #ddd; }
+
+  #streak { font-weight: bold; white-space: nowrap; }
+
+  #status {
+    display: flex;
+    justify-content: space-between;
+    font-size: 15px;
+    margin-bottom: 8px;
+    min-height: 22px;
+  }
+  #time { font-variant-numeric: tabular-nums; font-weight: bold; }
+
+  #box {
+    position: relative;
+    width: 100%;
+    aspect-ratio: 1;
+    background: #fff;
+    border: 3px solid #111;
+    border-radius: 14px;
+    overflow: hidden;
+    touch-action: none;
+    user-select: none;
+  }
   #cells { position: absolute; inset: 0; display: grid; }
-  #cells div { border: 1px solid #eee; }
+  #cells div { border: 1px solid #ddd; }
   #svg { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
-  button, input { padding: 8px 12px; margin: 8px 4px 0 0; }
-  #nick { width: 140px; }
-  #board { margin-top: 16px; padding-left: 20px; }
-  #share { display: none; }
+
+  .buttons { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+  button {
+    padding: 10px 16px;
+    font-size: 14px;
+    font-weight: bold;
+    background: #fff;
+    color: #111;
+    border: 2px solid #111;
+    border-radius: 8px;
+    cursor: pointer;
+  }
+  button:hover { background: #111; color: #fff; }
+  #share { display: none; background: #111; color: #fff; }
+  #share:hover { background: #fff; color: #111; }
+
+  h2 { font-size: 18px; margin: 28px 0 8px; }
+  #board { margin: 0; padding-left: 22px; line-height: 1.8; }
+  #board li { border-bottom: 1px solid #eee; }
 </style>
 </head>
 <body>
-<h2>Zip Puzzle</h2>
-<div>
+
+<h1>Zip Puzzle</h1>
+<p class="rules">
+  Start at 1 and drag to the next number. Visit the numbers in order and fill every cell.
+  The last number is the final cell.
+</p>
+
+<div class="row">
   <input id="nick" placeholder="Your name" maxlength="20">
   <span id="streak">Streak: 0</span>
 </div>
-<div id="top"><span id="msg">Loading...</span><span id="time">0:00</span></div>
-<div id="box"><div id="cells"></div><svg id="svg" viewBox="0 0 500 500"></svg></div>
-<div>
+
+<div id="status">
+  <span id="msg">Loading...</span>
+  <span id="time">0:00</span>
+</div>
+
+<div id="box">
+  <div id="cells"></div>
+  <svg id="svg" viewBox="0 0 500 500"></svg>
+</div>
+
+<div class="buttons">
   <button id="undo">Undo</button>
   <button id="reset">Reset</button>
   <button id="daily">Daily</button>
   <button id="random">Random</button>
   <button id="share">Share result</button>
 </div>
-<h3>Today's top 10</h3>
+
+<h2>Today's top 10</h2>
 <ol id="board"></ol>
 
 <script>
 const $ = id => document.getElementById(id);
-const box = $('box'), cellsEl = $('cells'), svg = $('svg'), msg = $('msg'), timeEl = $('time');
-const nickEl = $('nick'), shareBtn = $('share');
 
+const box = $('box');
+const cellsEl = $('cells');
+const svg = $('svg');
+const msg = $('msg');
+const timeEl = $('time');
+const nickEl = $('nick');
+const shareBtn = $('share');
+
+// Each browser gets a random id so the server can track streaks without a login
 const playerId = localStorage.getItem('zipPid') || crypto.randomUUID();
 localStorage.setItem('zipPid', playerId);
+
 nickEl.value = localStorage.getItem('zipNick') || '';
 nickEl.oninput = () => localStorage.setItem('zipNick', nickEl.value.trim());
 
-let N = 5, K = 0, seed = 0, label = '', nums = {}, path = [];
-let drawing = false, solved = false, verified = null, streak = 0, t0 = null, elapsed = 0;
+// Puzzle state
+let size = 5;          // grid is size x size
+let lastNumber = 0;    // the highest number on the board
+let seed = 0;
+let label = '';
+let numbers = {};      // cell index -> number shown in that cell
+
+// Player state
+let path = [];         // cell indexes the player has drawn, in order
+let drawing = false;
+let solved = false;
+let verified = null;
+let streak = 0;
+let startTime = null;
+let elapsed = 0;
+
+// Short hint messages (for example "Fill every cell first")
+let hint = '';
+let hintUntil = 0;
+
+function showHint(text) {
+  hint = text;
+  hintUntil = Date.now() + 2500;
+  render();
+  setTimeout(render, 2600);
+}
+
+function formatTime(ms) {
+  const total = Math.floor(ms / 1000);
+  const mins = Math.floor(total / 60);
+  const secs = String(total % 60).padStart(2, '0');
+  return mins + ':' + secs;
+}
+
+// ---------- loading a puzzle ----------
 
 async function load(kind) {
-  const r = await fetch('/api/zip/' + kind);
-  const p = await r.json();
-  N = p.size; seed = p.seed; label = p.label; K = p.checkpoints.length;
-  nums = {};
-  p.checkpoints.forEach((cell, i) => { nums[cell] = i + 1; });
-  cellsEl.style.gridTemplateColumns = 'repeat(' + N + ', 1fr)';
-  cellsEl.style.gridTemplateRows = 'repeat(' + N + ', 1fr)';
+  const res = await fetch('/api/zip/' + kind);
+  const puzzle = await res.json();
+
+  size = puzzle.size;
+  seed = puzzle.seed;
+  label = puzzle.label;
+  lastNumber = puzzle.checkpoints.length;
+
+  numbers = {};
+  puzzle.checkpoints.forEach((cell, i) => { numbers[cell] = i + 1; });
+
+  cellsEl.style.gridTemplateColumns = 'repeat(' + size + ', 1fr)';
+  cellsEl.style.gridTemplateRows = 'repeat(' + size + ', 1fr)';
   cellsEl.innerHTML = '';
-  for (let i = 0; i < N * N; i++) cellsEl.appendChild(document.createElement('div'));
-  svg.setAttribute('viewBox', '0 0 ' + N * 100 + ' ' + N * 100);
+  for (let i = 0; i < size * size; i++) {
+    cellsEl.appendChild(document.createElement('div'));
+  }
+  svg.setAttribute('viewBox', '0 0 ' + size * 100 + ' ' + size * 100);
+
   resetBoard();
 }
 
 function resetBoard() {
-  path = []; solved = false; verified = null; streak = 0; drawing = false;
-  t0 = null; elapsed = 0; shareBtn.style.display = 'none';
+  path = [];
+  solved = false;
+  verified = null;
+  streak = 0;
+  drawing = false;
+  startTime = null;
+  elapsed = 0;
+  shareBtn.style.display = 'none';
   render();
 }
 
-function neighbors(i) {
-  const r = Math.floor(i / N), c = i % N, a = [];
-  if (r > 0) a.push(i - N);
-  if (r < N - 1) a.push(i + N);
-  if (c > 0) a.push(i - 1);
-  if (c < N - 1) a.push(i + 1);
-  return a;
+// ---------- game rules ----------
+
+function neighbors(cell) {
+  const row = Math.floor(cell / size);
+  const col = cell % size;
+  const list = [];
+  if (row > 0) list.push(cell - size);
+  if (row < size - 1) list.push(cell + size);
+  if (col > 0) list.push(cell - 1);
+  if (col < size - 1) list.push(cell + 1);
+  return list;
 }
 
-function nextNeeded() {
-  let m = 0;
-  for (const c of path) if (nums[c]) m = nums[c];
-  return m + 1;
+// Which number the player has to reach next
+function nextNumber() {
+  let highest = 0;
+  for (const cell of path) {
+    if (numbers[cell]) highest = numbers[cell];
+  }
+  return highest + 1;
 }
 
-function cellAt(e) {
-  const r = box.getBoundingClientRect();
-  const x = (e.clientX - r.left) / r.width, y = (e.clientY - r.top) / r.height;
-  if (x < 0 || y < 0 || x >= 1 || y >= 1) return -1;
-  return Math.floor(y * N) * N + Math.floor(x * N);
-}
-
-function step(ci) {
+// Try to move the line onto a cell
+function step(cell) {
   const last = path[path.length - 1];
-  if (ci === last) return;
-  const pi = path.indexOf(ci);
-  if (pi >= 0) { path = path.slice(0, pi + 1); render(); return; }
-  if (!neighbors(last).includes(ci)) return;
-  const lab = nums[ci];
-  if (lab && lab !== nextNeeded()) return;
-  if (lab === K && path.length !== N * N - 1) return;
-  path.push(ci);
-  if (path.length === N * N && nums[ci] === K) finish();
+  if (cell === last) return;
+
+  // Touching a cell that is already on the line cuts the line back to that cell
+  const index = path.indexOf(cell);
+  if (index >= 0) {
+    path = path.slice(0, index + 1);
+    render();
+    return;
+  }
+
+  if (!neighbors(last).includes(cell)) return;
+
+  const number = numbers[cell];
+  if (number && number !== nextNumber()) {
+    showHint('Go to ' + nextNumber() + ' first');
+    return;
+  }
+  if (number === lastNumber && path.length !== size * size - 1) {
+    showHint('Fill every cell first. ' + lastNumber + ' must be last.');
+    return;
+  }
+
+  path.push(cell);
+
+  if (path.length === size * size && number === lastNumber) {
+    finish();
+  }
   render();
 }
 
+// The player filled the board: ask the server to check it
 async function finish() {
-  solved = true; drawing = false; elapsed = Date.now() - t0;
+  solved = true;
+  drawing = false;
+  elapsed = Date.now() - startTime;
+
   try {
-    const r = await fetch('/api/zip/solve', {
+    const res = await fetch('/api/zip/solve', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ seed, path, playerId, nickname: nickEl.value.trim(), timeMs: elapsed })
+      body: JSON.stringify({
+        seed,
+        path,
+        playerId,
+        nickname: nickEl.value.trim(),
+        timeMs: elapsed
+      })
     });
-    const d = await r.json();
-    verified = d.valid; streak = d.streak;
-  } catch (e) { verified = null; }
+    const data = await res.json();
+    verified = data.valid;
+    streak = data.streak;
+  } catch (e) {
+    verified = null;
+  }
+
   shareBtn.style.display = 'inline-block';
   render();
   loadBoard();
   loadStreak();
 }
 
+// ---------- leaderboard and streak ----------
+
 async function loadBoard() {
   try {
-    const r = await fetch('/api/zip/leaderboard');
-    const list = await r.json();
+    const res = await fetch('/api/zip/leaderboard');
+    const list = await res.json();
     const ol = $('board');
     ol.innerHTML = '';
-    list.forEach(e => {
+
+    if (!list.length) {
+      ol.innerHTML = '<li style="list-style:none">No solves yet today</li>';
+      return;
+    }
+    list.forEach(entry => {
       const li = document.createElement('li');
-      li.textContent = e.nickname + ' - ' + fmt(e.timeMs);
+      li.textContent = entry.nickname + ' - ' + formatTime(entry.timeMs);
       ol.appendChild(li);
     });
-    if (!list.length) ol.innerHTML = '<li style="list-style:none">No solves yet today</li>';
-  } catch (e) {}
+  } catch (e) {
+    // leaderboard is optional, ignore errors
+  }
 }
 
 async function loadStreak() {
   try {
-    const r = await fetch('/api/zip/streak?playerId=' + encodeURIComponent(playerId));
-    $('streak').textContent = 'Streak: ' + (await r.json()).streak;
-  } catch (e) {}
+    const res = await fetch('/api/zip/streak?playerId=' + encodeURIComponent(playerId));
+    const data = await res.json();
+    $('streak').textContent = 'Streak: ' + data.streak;
+  } catch (e) {
+    // ignore
+  }
 }
 
-shareBtn.onclick = async () => {
-  const text = 'I solved Zip Puzzle (' + label + ') in ' + fmt(elapsed) +
-    (streak ? ', streak ' + streak : '') + '. Beat me: ' + location.origin + '/zip.html';
-  try { await navigator.clipboard.writeText(text); shareBtn.textContent = 'Copied'; }
-  catch (e) { prompt('Copy this:', text); }
-  setTimeout(() => { shareBtn.textContent = 'Share result'; }, 1500);
-};
+// ---------- drawing on the board ----------
+
+function render() {
+  let html = '';
+
+  // the black line
+  if (path.length > 1) {
+    const points = path.map(c => {
+      const x = (c % size) * 100 + 50;
+      const y = Math.floor(c / size) * 100 + 50;
+      return x + ',' + y;
+    }).join(' ');
+    html += '<polyline points="' + points + '" fill="none" stroke="#111" ' +
+            'stroke-width="50" stroke-linecap="round" stroke-linejoin="round"/>';
+  } else if (path.length === 1) {
+    const c = path[0];
+    html += '<circle cx="' + ((c % size) * 100 + 50) + '" cy="' + (Math.floor(c / size) * 100 + 50) +
+            '" r="25" fill="#111"/>';
+  }
+
+  // the numbers: black when waiting, white once the line has reached them
+  for (const cell in numbers) {
+    const cx = (cell % size) * 100 + 50;
+    const cy = Math.floor(cell / size) * 100 + 50;
+    const reached = path.includes(Number(cell));
+    const fill = reached ? '#fff' : '#111';
+    const textColor = reached ? '#111' : '#fff';
+    html += '<circle cx="' + cx + '" cy="' + cy + '" r="29" fill="' + fill +
+            '" stroke="#111" stroke-width="5"/>' +
+            '<text x="' + cx + '" y="' + (cy + 11) + '" text-anchor="middle" font-size="32" ' +
+            'font-weight="bold" fill="' + textColor + '">' + numbers[cell] + '</text>';
+  }
+  svg.innerHTML = html;
+
+  // status line
+  if (solved) {
+    msg.textContent = 'Solved in ' + formatTime(elapsed) +
+      (verified ? ' (verified)' : '') + (streak ? ' | streak ' + streak : '');
+  } else if (Date.now() < hintUntil) {
+    msg.textContent = hint;
+  } else if (!path.length) {
+    msg.textContent = label + ': start at 1, drag to draw';
+  } else {
+    msg.textContent = label + ': next ' + nextNumber() + ' (' + path.length + '/' + size * size + ')';
+  }
+
+  timeEl.textContent = formatTime(solved ? elapsed : (startTime ? Date.now() - startTime : 0));
+}
+
+// ---------- mouse and touch ----------
+
+// Work out which cell the pointer is over
+function cellAt(e) {
+  const rect = box.getBoundingClientRect();
+  const x = (e.clientX - rect.left) / rect.width;
+  const y = (e.clientY - rect.top) / rect.height;
+  if (x < 0 || y < 0 || x >= 1 || y >= 1) return -1;
+  return Math.floor(y * size) * size + Math.floor(x * size);
+}
 
 box.addEventListener('pointerdown', e => {
   if (solved) return;
   box.setPointerCapture(e.pointerId);
-  const ci = cellAt(e);
-  if (ci < 0) return;
+
+  const cell = cellAt(e);
+  if (cell < 0) return;
+
+  // the line can only start on number 1
   if (path.length === 0) {
-    if (nums[ci] === 1) { path = [ci]; t0 = Date.now(); drawing = true; render(); }
+    if (numbers[cell] === 1) {
+      path = [cell];
+      startTime = Date.now();
+      drawing = true;
+      render();
+    } else {
+      showHint('Start at number 1');
+    }
     return;
   }
+
   drawing = true;
-  step(ci);
+  step(cell);
 });
+
 box.addEventListener('pointermove', e => {
   if (!drawing || solved) return;
-  const ci = cellAt(e);
-  if (ci >= 0) step(ci);
+  const cell = cellAt(e);
+  if (cell >= 0) step(cell);
 });
-['pointerup', 'pointercancel'].forEach(ev => box.addEventListener(ev, () => { drawing = false; }));
 
-$('undo').onclick = () => { if (solved) return; path.pop(); if (!path.length) t0 = null; render(); };
+['pointerup', 'pointercancel'].forEach(name => {
+  box.addEventListener(name, () => { drawing = false; });
+});
+
+// ---------- buttons ----------
+
+$('undo').onclick = () => {
+  if (solved) return;
+  path.pop();
+  if (!path.length) startTime = null;
+  render();
+};
 $('reset').onclick = resetBoard;
 $('daily').onclick = () => load('daily');
 $('random').onclick = () => load('random');
 
-const fmt = ms => { const s = Math.floor(ms / 1000); return Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0'); };
-
-function render() {
-  let h = '';
-  if (path.length > 1) {
-    const pts = path.map(c => (c % N * 100 + 50) + ',' + (Math.floor(c / N) * 100 + 50)).join(' ');
-    h += '<polyline points="' + pts + '" fill="none" stroke="#534AB7" stroke-width="56" stroke-linecap="round" stroke-linejoin="round"/>';
-  } else if (path.length === 1) {
-    const c = path[0];
-    h += '<circle cx="' + (c % N * 100 + 50) + '" cy="' + (Math.floor(c / N) * 100 + 50) + '" r="28" fill="#534AB7"/>';
+shareBtn.onclick = async () => {
+  const text = 'I solved Zip Puzzle (' + label + ') in ' + formatTime(elapsed) +
+    (streak ? ', streak ' + streak : '') + '. Beat me: ' + location.origin + '/zip.html';
+  try {
+    await navigator.clipboard.writeText(text);
+    shareBtn.textContent = 'Copied';
+  } catch (e) {
+    prompt('Copy this:', text);
   }
-  for (const c in nums) {
-    const cx = c % N * 100 + 50, cy = Math.floor(c / N) * 100 + 50;
-    h += '<circle cx="' + cx + '" cy="' + cy + '" r="27" fill="#111"/>' +
-         '<text x="' + cx + '" y="' + (cy + 11) + '" text-anchor="middle" font-size="30" font-weight="bold" fill="#fff">' + nums[c] + '</text>';
-  }
-  svg.innerHTML = h;
-  if (solved) msg.textContent = 'Solved in ' + fmt(elapsed) + (verified ? ' (verified)' : '') + (streak ? ' | streak ' + streak : '');
-  else if (!path.length) msg.textContent = label + ': start at 1, drag to draw';
-  else msg.textContent = label + ': next ' + nextNeeded() + ' (' + path.length + '/' + N * N + ')';
-  timeEl.textContent = fmt(solved ? elapsed : (t0 ? Date.now() - t0 : 0));
-}
+  setTimeout(() => { shareBtn.textContent = 'Share result'; }, 1500);
+};
 
-setInterval(() => { if (t0 && !solved) timeEl.textContent = fmt(Date.now() - t0); }, 500);
+// keep the timer ticking while the player is drawing
+setInterval(() => {
+  if (startTime && !solved) {
+    timeEl.textContent = formatTime(Date.now() - startTime);
+  }
+}, 500);
+
+// ---------- start ----------
 load('daily');
 loadBoard();
 loadStreak();
