@@ -197,6 +197,7 @@ function resetBoard() {
   drawing = false;
   startTime = null;
   elapsed = 0;
+  hintUntil = 0;
   shareBtn.style.display = 'none';
   render();
 }
@@ -223,8 +224,28 @@ function nextNumber() {
   return highest + 1;
 }
 
+// True if some empty cell can no longer be reached by the line.
+// An empty cell needs two free neighbours (one to enter, one to leave).
+// The last number only needs one, because the line ends there.
+// The tip of the line counts as free, because the line can step from it.
+function isStuck() {
+  const head = path[path.length - 1];
+  const visited = new Set(path);
+
+  for (let cell = 0; cell < size * size; cell++) {
+    if (visited.has(cell)) continue;
+
+    const open = neighbors(cell).filter(n => !visited.has(n) || n === head).length;
+    const needed = numbers[cell] === lastNumber ? 1 : 2;
+    if (open < needed) return true;
+  }
+  return false;
+}
+
 // Try to move the line onto a cell
 function step(cell) {
+  if (!path.length) return;
+
   const last = path[path.length - 1];
   if (cell === last) return;
 
@@ -252,6 +273,8 @@ function step(cell) {
 
   if (path.length === size * size && number === lastNumber) {
     finish();
+  } else if (isStuck()) {
+    showHint('Dead end: a cell can no longer be reached. Press Undo.');
   }
   render();
 }
