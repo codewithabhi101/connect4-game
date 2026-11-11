@@ -1,0 +1,97 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Connect 4</title>
+<script src="https://cdn.jsdelivr.net/npm/@stomp/stompjs@7.0.0/bundles/stomp.umd.min.js"></script>
+<style>
+  body { font-family: sans-serif; max-width: 420px; margin: 20px auto; padding: 0 12px; }
+  #board { display: grid; grid-template-columns: repeat(7, 1fr); gap: 4px;
+           background: #1d4ed8; padding: 6px; border-radius: 10px; }
+  .cell { aspect-ratio: 1; border-radius: 50%; background: #fff; cursor: pointer; }
+  .p1 { background: #facc15; }
+  .p2 { background: #ef4444; }
+  button, input { padding: 8px; margin: 4px 0; }
+</style>
+</head>
+<body>
+<h2>Connect 4</h2>
+<div>
+  <button id="create">Create room</button>
+  <input id="code" placeholder="Room code" size="8">
+  <button id="join">Join</button>
+</div>
+<p id="status">Create or join a room</p>
+<div id="board"></div>
+
+<script>
+  const playerId = sessionStorage.getItem('pid') || crypto.randomUUID();
+  sessionStorage.setItem('pid', playerId);
+  let me = 0, room = null, client = null;
+  const $ = id => document.getElementById(id);
+  const board = $('board'), status = $('status');
+
+  async function api(path, method = 'GET', body) {
+    const r = await fetch(path, {
+      method,
+      headers: { 'Content-Type': 'application/json' },
+      body: body ? JSON.stringify(body) : undefined
+    });
+    const data = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(data.message || 'Error');
+    return data;
+  }
+
+  async function enter(code) {
+    const res = await api('/api/rooms/' + code + '/join', 'POST', { playerId });
+    room = res.code;
+    me = res.playerNumber;
+    $('code').value = room;
+    render(res.state);
+    if (client) client.deactivate();
+    const proto = location.protocol === 'https:' ? 'wss://' : 'ws://';
+    client = new StompJs.Client({ brokerURL: proto + location.host + '/ws' });
+    client.onConnect = () => {
+      client.subscribe('/topic/rooms/' + room, m => render(JSON.parse(m.body)));
+      client.subscribe('/topic/errors/' + playerId, m => { status.textContent = m.body; });
+    };
+    client.activate();
+  }
+
+  function render(s) {
+    board.innerHTML = '';
+    s.board.forEach(row => row.forEach((v, c) => {
+      const d = document.createElement('div');
+      d.className = 'cell' + (v ? ' p' + v : '');
+      d.onclick = () => move(c);
+      board.appendChild(d);
+    }));
+    const you = me === 1 ? 'Yellow' : 'Red';
+    if (s.winner) status.textContent = s.winner === me ? 'You win!' : 'You lose';
+    else if (s.draw) status.textContent = 'Draw';
+    else if (!s.ready) status.textContent = 'Room ' + s.code + ': waiting for opponent (you are ' + you + ')';
+    else status.textContent = (s.currentPlayer === me ? 'Your turn' : "Opponent's turn") +
+                              ' | Room ' + s.code + ' (you are ' + you + ')';
+  }
+
+  function move(col) {
+    if (!client || !client.connected) return;
+    client.publish({
+      destination: '/app/rooms/' + room + '/move',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ playerId, col })
+    });
+  }
+
+  $('create').onclick = async () => {
+    try { const r = await api('/api/rooms', 'POST'); await enter(r.code); }
+    catch (e) { status.textContent = e.message; }
+  };
+  $('join').onclick = async () => {
+    try { await enter($('code').value.trim().toUpperCase()); }
+    catch (e) { status.textContent = e.message; }
+  };
+</script>
+</body>
+</html>

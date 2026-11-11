@@ -1,0 +1,208 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Zip Puzzle</title>
+<style>
+  body { font-family: sans-serif; max-width: 420px; margin: 20px auto; padding: 0 12px; }
+  #top { display: flex; justify-content: space-between; margin-bottom: 8px; }
+  #box { position: relative; width: 100%; aspect-ratio: 1; touch-action: none;
+         user-select: none; background: #fff; border: 1px solid #ddd; border-radius: 12px; overflow: hidden; }
+  #cells { position: absolute; inset: 0; display: grid; }
+  #cells div { border: 1px solid #eee; }
+  #svg { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+  button, input { padding: 8px 12px; margin: 8px 4px 0 0; }
+  #nick { width: 140px; }
+  #board { margin-top: 16px; padding-left: 20px; }
+  #share { display: none; }
+</style>
+</head>
+<body>
+<h2>Zip Puzzle</h2>
+<div>
+  <input id="nick" placeholder="Your name" maxlength="20">
+  <span id="streak">Streak: 0</span>
+</div>
+<div id="top"><span id="msg">Loading...</span><span id="time">0:00</span></div>
+<div id="box"><div id="cells"></div><svg id="svg" viewBox="0 0 500 500"></svg></div>
+<div>
+  <button id="undo">Undo</button>
+  <button id="reset">Reset</button>
+  <button id="daily">Daily</button>
+  <button id="random">Random</button>
+  <button id="share">Share result</button>
+</div>
+<h3>Today's top 10</h3>
+<ol id="board"></ol>
+
+<script>
+const $ = id => document.getElementById(id);
+const box = $('box'), cellsEl = $('cells'), svg = $('svg'), msg = $('msg'), timeEl = $('time');
+const nickEl = $('nick'), shareBtn = $('share');
+
+const playerId = localStorage.getItem('zipPid') || crypto.randomUUID();
+localStorage.setItem('zipPid', playerId);
+nickEl.value = localStorage.getItem('zipNick') || '';
+nickEl.oninput = () => localStorage.setItem('zipNick', nickEl.value.trim());
+
+let N = 5, K = 0, seed = 0, label = '', nums = {}, path = [];
+let drawing = false, solved = false, verified = null, streak = 0, t0 = null, elapsed = 0;
+
+async function load(kind) {
+  const r = await fetch('/api/zip/' + kind);
+  const p = await r.json();
+  N = p.size; seed = p.seed; label = p.label; K = p.checkpoints.length;
+  nums = {};
+  p.checkpoints.forEach((cell, i) => { nums[cell] = i + 1; });
+  cellsEl.style.gridTemplateColumns = 'repeat(' + N + ', 1fr)';
+  cellsEl.style.gridTemplateRows = 'repeat(' + N + ', 1fr)';
+  cellsEl.innerHTML = '';
+  for (let i = 0; i < N * N; i++) cellsEl.appendChild(document.createElement('div'));
+  svg.setAttribute('viewBox', '0 0 ' + N * 100 + ' ' + N * 100);
+  resetBoard();
+}
+
+function resetBoard() {
+  path = []; solved = false; verified = null; streak = 0; drawing = false;
+  t0 = null; elapsed = 0; shareBtn.style.display = 'none';
+  render();
+}
+
+function neighbors(i) {
+  const r = Math.floor(i / N), c = i % N, a = [];
+  if (r > 0) a.push(i - N);
+  if (r < N - 1) a.push(i + N);
+  if (c > 0) a.push(i - 1);
+  if (c < N - 1) a.push(i + 1);
+  return a;
+}
+
+function nextNeeded() {
+  let m = 0;
+  for (const c of path) if (nums[c]) m = nums[c];
+  return m + 1;
+}
+
+function cellAt(e) {
+  const r = box.getBoundingClientRect();
+  const x = (e.clientX - r.left) / r.width, y = (e.clientY - r.top) / r.height;
+  if (x < 0 || y < 0 || x >= 1 || y >= 1) return -1;
+  return Math.floor(y * N) * N + Math.floor(x * N);
+}
+
+function step(ci) {
+  const last = path[path.length - 1];
+  if (ci === last) return;
+  const pi = path.indexOf(ci);
+  if (pi >= 0) { path = path.slice(0, pi + 1); render(); return; }
+  if (!neighbors(last).includes(ci)) return;
+  const lab = nums[ci];
+  if (lab && lab !== nextNeeded()) return;
+  if (lab === K && path.length !== N * N - 1) return;
+  path.push(ci);
+  if (path.length === N * N && nums[ci] === K) finish();
+  render();
+}
+
+async function finish() {
+  solved = true; drawing = false; elapsed = Date.now() - t0;
+  try {
+    const r = await fetch('/api/zip/solve', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ seed, path, playerId, nickname: nickEl.value.trim(), timeMs: elapsed })
+    });
+    const d = await r.json();
+    verified = d.valid; streak = d.streak;
+  } catch (e) { verified = null; }
+  shareBtn.style.display = 'inline-block';
+  render();
+  loadBoard();
+  loadStreak();
+}
+
+async function loadBoard() {
+  try {
+    const r = await fetch('/api/zip/leaderboard');
+    const list = await r.json();
+    const ol = $('board');
+    ol.innerHTML = '';
+    list.forEach(e => {
+      const li = document.createElement('li');
+      li.textContent = e.nickname + ' - ' + fmt(e.timeMs);
+      ol.appendChild(li);
+    });
+    if (!list.length) ol.innerHTML = '<li style="list-style:none">No solves yet today</li>';
+  } catch (e) {}
+}
+
+async function loadStreak() {
+  try {
+    const r = await fetch('/api/zip/streak?playerId=' + encodeURIComponent(playerId));
+    $('streak').textContent = 'Streak: ' + (await r.json()).streak;
+  } catch (e) {}
+}
+
+shareBtn.onclick = async () => {
+  const text = 'I solved Zip Puzzle (' + label + ') in ' + fmt(elapsed) +
+    (streak ? ', streak ' + streak : '') + '. Beat me: ' + location.origin + '/zip.html';
+  try { await navigator.clipboard.writeText(text); shareBtn.textContent = 'Copied'; }
+  catch (e) { prompt('Copy this:', text); }
+  setTimeout(() => { shareBtn.textContent = 'Share result'; }, 1500);
+};
+
+box.addEventListener('pointerdown', e => {
+  if (solved) return;
+  box.setPointerCapture(e.pointerId);
+  const ci = cellAt(e);
+  if (ci < 0) return;
+  if (path.length === 0) {
+    if (nums[ci] === 1) { path = [ci]; t0 = Date.now(); drawing = true; render(); }
+    return;
+  }
+  drawing = true;
+  step(ci);
+});
+box.addEventListener('pointermove', e => {
+  if (!drawing || solved) return;
+  const ci = cellAt(e);
+  if (ci >= 0) step(ci);
+});
+['pointerup', 'pointercancel'].forEach(ev => box.addEventListener(ev, () => { drawing = false; }));
+
+$('undo').onclick = () => { if (solved) return; path.pop(); if (!path.length) t0 = null; render(); };
+$('reset').onclick = resetBoard;
+$('daily').onclick = () => load('daily');
+$('random').onclick = () => load('random');
+
+const fmt = ms => { const s = Math.floor(ms / 1000); return Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0'); };
+
+function render() {
+  let h = '';
+  if (path.length > 1) {
+    const pts = path.map(c => (c % N * 100 + 50) + ',' + (Math.floor(c / N) * 100 + 50)).join(' ');
+    h += '<polyline points="' + pts + '" fill="none" stroke="#534AB7" stroke-width="56" stroke-linecap="round" stroke-linejoin="round"/>';
+  } else if (path.length === 1) {
+    const c = path[0];
+    h += '<circle cx="' + (c % N * 100 + 50) + '" cy="' + (Math.floor(c / N) * 100 + 50) + '" r="28" fill="#534AB7"/>';
+  }
+  for (const c in nums) {
+    const cx = c % N * 100 + 50, cy = Math.floor(c / N) * 100 + 50;
+    h += '<circle cx="' + cx + '" cy="' + cy + '" r="27" fill="#111"/>' +
+         '<text x="' + cx + '" y="' + (cy + 11) + '" text-anchor="middle" font-size="30" font-weight="bold" fill="#fff">' + nums[c] + '</text>';
+  }
+  svg.innerHTML = h;
+  if (solved) msg.textContent = 'Solved in ' + fmt(elapsed) + (verified ? ' (verified)' : '') + (streak ? ' | streak ' + streak : '');
+  else if (!path.length) msg.textContent = label + ': start at 1, drag to draw';
+  else msg.textContent = label + ': next ' + nextNeeded() + ' (' + path.length + '/' + N * N + ')';
+  timeEl.textContent = fmt(solved ? elapsed : (t0 ? Date.now() - t0 : 0));
+}
+
+setInterval(() => { if (t0 && !solved) timeEl.textContent = fmt(Date.now() - t0); }, 500);
+load('daily');
+loadBoard();
+loadStreak();
+</script>
+</body>
+</html>
