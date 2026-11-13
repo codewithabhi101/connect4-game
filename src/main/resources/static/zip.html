@@ -146,7 +146,7 @@ let streak = 0;
 let startTime = null;
 let elapsed = 0;
 
-// Short hint messages (for example "Fill every cell first")
+// Short hint messages (for example "Go to 3 first")
 let hint = '';
 let hintUntil = 0;
 
@@ -289,8 +289,6 @@ function step(cell) {
 
   if (path.length === size * size && number === lastNumber) {
     finish();
-  } else if (isStuck()) {
-    showHint('Dead end: a cell can no longer be reached. Press Undo.');
   }
   render();
 }
@@ -393,10 +391,12 @@ function render() {
   }
   svg.innerHTML = html;
 
-  // status line
+  // status line (the dead-end message stays until the player presses Undo)
   if (solved) {
     msg.textContent = 'Solved in ' + formatTime(elapsed) +
       (verified ? ' (verified)' : '') + (streak ? ' | streak ' + streak : '');
+  } else if (path.length && isStuck()) {
+    msg.textContent = 'Dead end: a cell can no longer be reached. Press Undo.';
   } else if (Date.now() < hintUntil) {
     msg.textContent = hint;
   } else if (!path.length) {
