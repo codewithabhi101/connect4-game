@@ -37,9 +37,10 @@
   #status {
     display: flex;
     justify-content: space-between;
+    gap: 12px;
     font-size: 15px;
     margin-bottom: 8px;
-    min-height: 22px;
+    min-height: 40px;
   }
   #time { font-variant-numeric: tabular-nums; font-weight: bold; }
 
@@ -83,7 +84,8 @@
 <h1>Zip Puzzle</h1>
 <p class="rules">
   Start at 1 and drag to the next number. Visit the numbers in order and fill every cell.
-  The last number is the final cell.
+  The last number is the final cell, so it only connects after all other cells are filled.
+  Stuck? Press Hint.
 </p>
 
 <div class="row">
@@ -104,6 +106,7 @@
 <div class="buttons">
   <button id="undo">Undo</button>
   <button id="reset">Reset</button>
+  <button id="hint">Hint</button>
   <button id="daily">Daily</button>
   <button id="random">Random</button>
   <button id="share">Share result</button>
@@ -145,16 +148,19 @@ let verified = null;
 let streak = 0;
 let startTime = null;
 let elapsed = 0;
+let usedHint = false;  // a puzzle solved with hints is not put on the leaderboard
+let hintCells = [];    // the next few cells shown by the Hint button
+let lastPoint = null;  // last pointer position, used to fill in skipped cells
 
-// Short hint messages (for example "Go to 3 first")
+// Short messages (for example "Go to 3 first")
 let hint = '';
 let hintUntil = 0;
 
 function showHint(text) {
   hint = text;
-  hintUntil = Date.now() + 2500;
+  hintUntil = Date.now() + 3500;
   render();
-  setTimeout(render, 2600);
+  setTimeout(render, 3600);
 }
 
 function formatTime(ms) {
@@ -197,6 +203,9 @@ function resetBoard() {
   drawing = false;
   startTime = null;
   elapsed = 0;
+  usedHint = false;
+  hintCells = [];
+  lastPoint = null;
   hintUntil = 0;
   shareBtn.style.display = 'none';
   render();
@@ -215,19 +224,24 @@ function neighbors(cell) {
   return list;
 }
 
-// Which number the player has to reach next
-function nextNumber() {
+// Which number has to be reached next, for a given line of cells
+function nextNumberFor(line) {
   let highest = 0;
-  for (const cell of path) {
+  for (const cell of line) {
     if (numbers[cell]) highest = numbers[cell];
   }
   return highest + 1;
 }
 
-// True if the board can no longer be finished.
-function isStuck() {
-  const head = path[path.length - 1];
-  const visited = new Set(path);
+function nextNumber() {
+  return nextNumberFor(path);
+}
+
+// Empty cells that can no longer be filled, given the line drawn so far
+function trappedCellsFor(line) {
+  const head = line[line.length - 1];
+  const visited = new Set(line);
+  const trapped = new Set();
 
   // 1. Every empty cell needs enough free neighbours.
   // (one to enter, one to leave; the last number only needs one)
@@ -236,7 +250,7 @@ function isStuck() {
 
     const open = neighbors(cell).filter(n => !visited.has(n) || n === head).length;
     const needed = numbers[cell] === lastNumber ? 1 : 2;
-    if (open < needed) return true;
+    if (open < needed) trapped.add(cell);
   }
 
   // 2. Every empty cell must be reachable from the tip of the line.
@@ -252,10 +266,84 @@ function isStuck() {
     }
   }
   for (let cell = 0; cell < size * size; cell++) {
-    if (!visited.has(cell) && !reachable.has(cell)) return true;
+    if (!visited.has(cell) && !reachable.has(cell)) trapped.add(cell);
   }
 
-  return false;
+  return [...trapped];
+}
+
+function isStuckFor(line) {
+  return line.length > 0 && trappedCellsFor(line).length > 0;
+}
+
+function isStuck() {
+  return isStuckFor(path);
+}
+
+// Looks for a way to finish the puzzle from a given line.
+// Returns the remaining cells in order, or null if there is none.
+function findCompletion(line) {
+  const total = size * size;
+  const route = line.slice();
+  const seen = new Set(route);
+  let tries = 0;
+
+  function search() {
+    if (route.length === total) return numbers[route[total - 1]] === lastNumber;
+    if (++tries > 60000) return false;
+
+    const wanted = nextNumberFor(route);
+    for (const next of neighbors(route[route.length - 1])) {
+      if (seen.has(next)) continue;
+
+      const number = numbers[next];
+      if (number && number !== wanted) continue;
+      if (number === lastNumber && route.length !== total - 1) continue;
+
+      route.push(next);
+      seen.add(next);
+      if (!isStuckFor(route) && search()) return true;
+      route.pop();
+      seen.delete(next);
+    }
+    return false;
+  }
+
+  return search() ? route.slice(line.length) : null;
+}
+
+// The Hint button: back up if the line is stuck, then show the next 3 cells
+function giveHint() {
+  if (solved || !lastNumber) return;
+
+  // no line yet: point at number 1
+  if (!path.length) {
+    const first = Object.keys(numbers).find(cell => numbers[cell] === 1);
+    hintCells = [Number(first)];
+    showHint('Start on number 1.');
+    return;
+  }
+
+  usedHint = true;
+  let backedUp = false;
+  let rest = null;
+
+  while (true) {
+    if (!isStuck()) rest = findCompletion(path);
+    if (rest || path.length <= 1) break;
+    path.pop();
+    backedUp = true;
+  }
+
+  if (!rest) {
+    showHint('No hint found. Press Reset and start again.');
+    return;
+  }
+
+  hintCells = rest.slice(0, 3);
+  showHint(backedUp
+    ? 'Backed up to a spot that can still be finished. Follow the dots.'
+    : 'Follow the dotted line. Hints are not ranked on the leaderboard.');
 }
 
 // Try to move the line onto a cell
@@ -264,6 +352,7 @@ function step(cell) {
 
   const last = path[path.length - 1];
   if (cell === last) return;
+  hintCells = [];
 
   // Touching a cell that is already on the line cuts the line back to that cell
   const index = path.indexOf(cell);
@@ -306,7 +395,7 @@ async function finish() {
       body: JSON.stringify({
         seed,
         path,
-        playerId,
+        playerId: usedHint ? '' : playerId,   // no id means the time is not saved
         nickname: nickEl.value.trim(),
         timeMs: elapsed
       })
@@ -359,28 +448,44 @@ async function loadStreak() {
 
 // ---------- drawing on the board ----------
 
+function centerX(cell) { return (cell % size) * 100 + 50; }
+function centerY(cell) { return Math.floor(cell / size) * 100 + 50; }
+
 function render() {
   let html = '';
+  const trapped = (path.length && !solved) ? trappedCellsFor(path) : [];
 
   // the black line
   if (path.length > 1) {
-    const points = path.map(c => {
-      const x = (c % size) * 100 + 50;
-      const y = Math.floor(c / size) * 100 + 50;
-      return x + ',' + y;
-    }).join(' ');
+    const points = path.map(c => centerX(c) + ',' + centerY(c)).join(' ');
     html += '<polyline points="' + points + '" fill="none" stroke="#111" ' +
             'stroke-width="50" stroke-linecap="round" stroke-linejoin="round"/>';
   } else if (path.length === 1) {
-    const c = path[0];
-    html += '<circle cx="' + ((c % size) * 100 + 50) + '" cy="' + (Math.floor(c / size) * 100 + 50) +
+    html += '<circle cx="' + centerX(path[0]) + '" cy="' + centerY(path[0]) +
             '" r="25" fill="#111"/>';
+  }
+
+  // cells that can no longer be filled are marked with a cross
+  trapped.forEach(c => {
+    html += '<text x="' + centerX(c) + '" y="' + (centerY(c) + 22) + '" text-anchor="middle" ' +
+            'font-size="64" font-weight="bold" fill="#111">&times;</text>';
+  });
+
+  // the dotted trail from the Hint button
+  if (hintCells.length && path.length) {
+    const trail = [path[path.length - 1]].concat(hintCells)
+      .map(c => centerX(c) + ',' + centerY(c)).join(' ');
+    html += '<polyline points="' + trail + '" fill="none" stroke="#999" stroke-width="16" ' +
+            'stroke-linecap="round" stroke-linejoin="round" stroke-dasharray="1 30"/>';
+  } else if (hintCells.length) {
+    html += '<circle cx="' + centerX(hintCells[0]) + '" cy="' + centerY(hintCells[0]) +
+            '" r="42" fill="none" stroke="#999" stroke-width="7" stroke-dasharray="10 10"/>';
   }
 
   // the numbers: black when waiting, white once the line has reached them
   for (const cell in numbers) {
-    const cx = (cell % size) * 100 + 50;
-    const cy = Math.floor(cell / size) * 100 + 50;
+    const cx = centerX(Number(cell));
+    const cy = centerY(Number(cell));
     const reached = path.includes(Number(cell));
     const fill = reached ? '#fff' : '#111';
     const textColor = reached ? '#111' : '#fff';
@@ -394,9 +499,10 @@ function render() {
   // status line (the dead-end message stays until the player presses Undo)
   if (solved) {
     msg.textContent = 'Solved in ' + formatTime(elapsed) +
-      (verified ? ' (verified)' : '') + (streak ? ' | streak ' + streak : '');
-  } else if (path.length && isStuck()) {
-    msg.textContent = 'Dead end: a cell can no longer be reached. Press Undo.';
+      (verified ? ' (verified)' : '') +
+      (usedHint ? ' | hint used, not ranked' : (streak ? ' | streak ' + streak : ''));
+  } else if (trapped.length) {
+    msg.textContent = 'Dead end: the cells marked × can no longer be filled. Press Undo, or Hint.';
   } else if (Date.now() < hintUntil) {
     msg.textContent = hint;
   } else if (!path.length) {
@@ -410,11 +516,11 @@ function render() {
 
 // ---------- mouse and touch ----------
 
-// Work out which cell the pointer is over
-function cellAt(e) {
+// Work out which cell a screen position is over
+function cellAtPoint(clientX, clientY) {
   const rect = box.getBoundingClientRect();
-  const x = (e.clientX - rect.left) / rect.width;
-  const y = (e.clientY - rect.top) / rect.height;
+  const x = (clientX - rect.left) / rect.width;
+  const y = (clientY - rect.top) / rect.height;
   if (x < 0 || y < 0 || x >= 1 || y >= 1) return -1;
   return Math.floor(y * size) * size + Math.floor(x * size);
 }
@@ -422,14 +528,16 @@ function cellAt(e) {
 box.addEventListener('pointerdown', e => {
   if (solved) return;
   box.setPointerCapture(e.pointerId);
+  lastPoint = { x: e.clientX, y: e.clientY };
 
-  const cell = cellAt(e);
+  const cell = cellAtPoint(e.clientX, e.clientY);
   if (cell < 0) return;
 
   // the line can only start on number 1
   if (path.length === 0) {
     if (numbers[cell] === 1) {
       path = [cell];
+      hintCells = [];
       startTime = Date.now();
       drawing = true;
       render();
@@ -445,12 +553,29 @@ box.addEventListener('pointerdown', e => {
 
 box.addEventListener('pointermove', e => {
   if (!drawing || solved) return;
-  const cell = cellAt(e);
-  if (cell >= 0) step(cell);
+
+  // A fast drag can jump over cells, so walk in small steps
+  // from the last position to the new one.
+  const from = lastPoint || { x: e.clientX, y: e.clientY };
+  const cellPx = box.getBoundingClientRect().width / size;
+  const distance = Math.hypot(e.clientX - from.x, e.clientY - from.y);
+  const count = Math.max(1, Math.ceil(distance / (cellPx / 4)));
+
+  for (let i = 1; i <= count; i++) {
+    const x = from.x + (e.clientX - from.x) * i / count;
+    const y = from.y + (e.clientY - from.y) * i / count;
+    const cell = cellAtPoint(x, y);
+    if (cell >= 0) step(cell);
+    if (solved) break;
+  }
+  lastPoint = { x: e.clientX, y: e.clientY };
 });
 
 ['pointerup', 'pointercancel'].forEach(name => {
-  box.addEventListener(name, () => { drawing = false; });
+  box.addEventListener(name, () => {
+    drawing = false;
+    lastPoint = null;
+  });
 });
 
 // ---------- buttons ----------
@@ -458,10 +583,12 @@ box.addEventListener('pointermove', e => {
 $('undo').onclick = () => {
   if (solved) return;
   path.pop();
+  hintCells = [];
   if (!path.length) startTime = null;
   render();
 };
 $('reset').onclick = resetBoard;
+$('hint').onclick = giveHint;
 $('daily').onclick = () => load('daily');
 $('random').onclick = () => load('random');
 
