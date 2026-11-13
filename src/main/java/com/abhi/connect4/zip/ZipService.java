@@ -11,8 +11,8 @@ import org.springframework.stereotype.Service;
 @Service
 public class ZipService {
 
-    public static final int SIZE = 5;
-    public static final int CHECKPOINTS = 6;
+    public static final int SIZE = 6;
+    public static final int CHECKPOINTS = 13;
 
     private final ZipResultRepository repo;
 

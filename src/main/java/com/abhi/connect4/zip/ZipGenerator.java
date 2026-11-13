@@ -2,6 +2,7 @@ package com.abhi.connect4.zip;
 
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.Comparator;
 import java.util.List;
 import java.util.Random;
 import java.util.TreeSet;
@@ -21,6 +22,7 @@ public final class ZipGenerator {
         List<Integer> path = randomPath(rnd, size);
         int total = size * size;
 
+        // The first and last cell of the path are always numbered.
         TreeSet<Integer> indexes = new TreeSet<>();
         indexes.add(0);
         indexes.add(total - 1);
@@ -35,6 +37,7 @@ public final class ZipGenerator {
         return new Generated(new ZipPuzzle(size, checkpoints), path);
     }
 
+    // Builds a random path that visits every cell exactly once.
     private static List<Integer> randomPath(Random rnd, int size) {
         int total = size * size;
         while (true) {
@@ -58,12 +61,18 @@ public final class ZipGenerator {
         if (path.size() == size * size) {
             return true;
         }
-        if (++steps[0] > 20000) {
+        if (++steps[0] > 50000) {
             return false;
         }
+
         List<Integer> options = neighbors(path.get(path.size() - 1), size);
         options.removeIf(n -> visited[n]);
+
+        // Shuffle first, then try cells with the fewest free neighbours first.
+        // This keeps the path from trapping itself, so big boards are fast.
         Collections.shuffle(options, rnd);
+        options.sort(Comparator.comparingInt(n -> freeNeighbors(n, size, visited)));
+
         for (int next : options) {
             visited[next] = true;
             path.add(next);
@@ -74,6 +83,16 @@ public final class ZipGenerator {
             visited[next] = false;
         }
         return false;
+    }
+
+    private static int freeNeighbors(int cell, int size, boolean[] visited) {
+        int count = 0;
+        for (int n : neighbors(cell, size)) {
+            if (!visited[n]) {
+                count++;
+            }
+        }
+        return count;
     }
 
     public static List<Integer> neighbors(int cell, int size) {
