@@ -224,14 +224,13 @@ function nextNumber() {
   return highest + 1;
 }
 
-// True if some empty cell can no longer be reached by the line.
-// An empty cell needs two free neighbours (one to enter, one to leave).
-// The last number only needs one, because the line ends there.
-// The tip of the line counts as free, because the line can step from it.
+// True if the board can no longer be finished.
 function isStuck() {
   const head = path[path.length - 1];
   const visited = new Set(path);
 
+  // 1. Every empty cell needs enough free neighbours.
+  // (one to enter, one to leave; the last number only needs one)
   for (let cell = 0; cell < size * size; cell++) {
     if (visited.has(cell)) continue;
 
@@ -239,6 +238,23 @@ function isStuck() {
     const needed = numbers[cell] === lastNumber ? 1 : 2;
     if (open < needed) return true;
   }
+
+  // 2. Every empty cell must be reachable from the tip of the line.
+  const reachable = new Set([head]);
+  const queue = [head];
+  while (queue.length) {
+    const current = queue.shift();
+    for (const n of neighbors(current)) {
+      if (!visited.has(n) && !reachable.has(n)) {
+        reachable.add(n);
+        queue.push(n);
+      }
+    }
+  }
+  for (let cell = 0; cell < size * size; cell++) {
+    if (!visited.has(cell) && !reachable.has(cell)) return true;
+  }
+
   return false;
 }
 
